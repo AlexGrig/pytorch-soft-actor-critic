@@ -1,6 +1,7 @@
 import argparse
 import datetime
-import gym
+from pathlib import Path
+import gymnasium as gym
 import numpy as np
 import itertools
 import torch
@@ -9,8 +10,8 @@ from torch.utils.tensorboard import SummaryWriter
 from replay_memory import ReplayMemory
 
 parser = argparse.ArgumentParser(description='PyTorch Soft Actor-Critic Args')
-parser.add_argument('--env-name', default="HalfCheetah-v2",
-                    help='Mujoco Gym environment (default: HalfCheetah-v2)')
+parser.add_argument('--env-name', default="HalfCheetah-v4",
+                    help='Mujoco Gym environment (default: HalfCheetah-v4)')
 parser.add_argument('--policy', default="Gaussian",
                     help='Policy Type: Gaussian | Deterministic (default: Gaussian)')
 parser.add_argument('--eval', type=bool, default=True,
@@ -44,23 +45,48 @@ parser.add_argument('--replay_size', type=int, default=1000000, metavar='N',
                     help='size of replay buffer (default: 10000000)')
 parser.add_argument('--cuda', action="store_true",
                     help='run on CUDA (default: False)')
+parser.add_argument('--num_threads', type=int, default=10, metavar='N',
+                    help='Pytorch number of threads (default 10).')
 args = parser.parse_args()
+
+def get_state(obs):
+    """
+    Function which alters the observation received from the environment. Output from this function is written
+    to replay_buffer.
+    """
+    
+    #state = np.array(obs)
+    #state = state.transpose((2, 0, 1))
+    #state = torch.from_numpy(state)
+    #return state.unsqueeze(0)
+    if isinstance(obs, tuple): # seems to work on reset in gymansium
+        tt0 = obs[0]
+    else:
+        tt0 = obs
+    #tt1 = wrap.obs_fit_shape_to_pytorch(tt0, extra_batch_dim=False)
+    #return torch.from_numpy(tt1)
+    return tt0
 
 # Environment
 # env = NormalizedActions(gym.make(args.env_name))
 env = gym.make(args.env_name)
-env.seed(args.seed)
-env.action_space.seed(args.seed)
+#env.seed(args.seed)
+#env.action_space.seed(args.seed)
 
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
+if (args.num_threads is not None):
+    print(f'num_threads: {args.num_threads}')
+    torch.set_num_threads(args.num_threads)
+        
 # Agent
 agent = SAC(env.observation_space.shape[0], env.action_space, args)
 
 #Tesnorboard
-writer = SummaryWriter('runs/{}_SAC_{}_{}_{}'.format(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"), args.env_name,
-                                                             args.policy, "autotune" if args.automatic_entropy_tuning else ""))
+log_dir = 'runs/{}_SAC_{}_{}_{}'.format(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"), args.env_name,
+                                                             args.policy, "autotune" if args.automatic_entropy_tuning else "")
+writer = SummaryWriter(log_dir)
 
 # Memory
 memory = ReplayMemory(args.replay_size, args.seed)
@@ -73,7 +99,7 @@ for i_episode in itertools.count(1):
     episode_reward = 0
     episode_steps = 0
     done = False
-    state = env.reset()
+    state = get_state( env.reset(seed=args.seed) )
 
     while not done:
         if args.start_steps > total_numsteps:
@@ -94,15 +120,18 @@ for i_episode in itertools.count(1):
                 writer.add_scalar('entropy_temprature/alpha', alpha, updates)
                 updates += 1
 
-        next_state, reward, done, _ = env.step(action) # Step
+        next_state, reward, terminated, truncated, _ = env.step(action) # Step
+        next_state = get_state(next_state)
+        done = (terminated or truncated)
+        
         episode_steps += 1
         total_numsteps += 1
         episode_reward += reward
-
+        
         # Ignore the "done" signal if it comes from hitting the time horizon.
         # (https://github.com/openai/spinningup/blob/master/spinup/algos/sac/sac.py)
         mask = 1 if episode_steps == env._max_episode_steps else float(not done)
-
+        #mask = 1 if truncated else 0
         memory.push(state, action, reward, next_state, mask) # Append transition to memory
 
         state = next_state
@@ -112,18 +141,25 @@ for i_episode in itertools.count(1):
 
     writer.add_scalar('reward/train', episode_reward, i_episode)
     print("Episode: {}, total numsteps: {}, episode steps: {}, reward: {}".format(i_episode, total_numsteps, episode_steps, round(episode_reward, 2)))
-
+    
+    if (i_episode % 100 == 0):
+        chkpt_file = log_dir + "/sac_checkpoint_{}_{}".format(args.env_name, args.policy)
+        agent.save_checkpoint(args.env_name, suffix="checkpoint", ckpt_path=chkpt_file) # Saves to checkpoints dir
+        
     if i_episode % 10 == 0 and args.eval is True:
         avg_reward = 0.
         episodes = 10
         for _  in range(episodes):
-            state = env.reset()
+            state = get_state( env.reset() )
             episode_reward = 0
             done = False
             while not done:
                 action = agent.select_action(state, evaluate=True)
 
-                next_state, reward, done, _ = env.step(action)
+                next_state, reward, terminated, truncated, _ = env.step(action)
+                next_state = get_state(next_state)
+                done = (terminated or truncated)
+                
                 episode_reward += reward
 
 
