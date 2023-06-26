@@ -12,6 +12,8 @@ from replay_memory import ReplayMemory
 parser = argparse.ArgumentParser(description='PyTorch Soft Actor-Critic Args')
 parser.add_argument('--env-name', default="HalfCheetah-v4",
                     help='Mujoco Gym environment (default: HalfCheetah-v4)')
+parser.add_argument('--max_episode_steps', type=int, default=1000,
+                    help='Max episode steps (default: 1000)')
 parser.add_argument('--policy', default="Gaussian",
                     help='Policy Type: Gaussian | Deterministic (default: Gaussian)')
 parser.add_argument('--eval', type=bool, default=True,
@@ -69,7 +71,7 @@ def get_state(obs):
 
 # Environment
 # env = NormalizedActions(gym.make(args.env_name))
-env = gym.make(args.env_name)
+env = gym.make(args.env_name, max_episode_steps=args.max_episode_steps)
 #env.seed(args.seed)
 #env.action_space.seed(args.seed)
 
